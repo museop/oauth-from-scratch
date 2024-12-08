@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, redirect, session, url_for
-from datetime import datetime, timedelta, UTC
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime, timedelta, timezone
 import bcrypt
 import uuid
 import jwt
@@ -8,22 +9,62 @@ import hashlib
 app = Flask(__name__)
 app.secret_key = "your_secret_key"
 
+# Database configuration
+app.config["SQLALCHEMY_DATABASE_URI"] = (
+    "sqlite:///oauth_demo.db"  # Replace with PostgreSQL/MySQL in production
+)
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db = SQLAlchemy(app)
+
 # Secret key for JWT
 JWT_SECRET = "your_jwt_secret"
 JWT_ALGORITHM = "HS256"
 
-# In-memory database (for demo purposes)
-CLIENTS = {
-    "client_id_123": {
-        "name": "client_id_123_name",
-        "client_secret": "client_secret_123",
-        "redirect_uris": ["http://127.0.0.1:5000/callback"],
-        "authorized_grants": ["authorization_code"],
-    }
-}
-AUTHORICATION_CODES = {}
-USERS = {"test_user": bcrypt.hashpw("password123".encode("utf-8"), bcrypt.gensalt())}
-REFRESH_TOKENS = {}
+
+# Database models
+class User(db.Model):
+    username = db.Column(db.String(255), primary_key=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class Client(db.Model):
+    client_id = db.Column(db.String(255), primary_key=True)
+    client_secret = db.Column(db.String(255), nullable=False)
+    name = db.Column(db.String(255), nullable=False)
+    redirect_uris = db.Column(db.Text, nullable=False)  # JSON encoded
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class AuthorizationCode(db.Model):
+    code = db.Column(db.String(255), primary_key=True)
+    client_id = db.Column(
+        db.String(255), db.ForeignKey("client.client_id"), nullable=False
+    )
+    username = db.Column(db.String(255), db.ForeignKey("user.username"), nullable=False)
+    scope = db.Column(db.Text, nullable=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class RefreshToken(db.Model):
+    token = db.Column(db.String(255), primary_key=True)
+    client_id = db.Column(
+        db.String(255), db.ForeignKey("client.client_id"), nullable=False
+    )
+    username = db.Column(db.String(255), db.ForeignKey("user.username"), nullable=False)
+    scope = db.Column(db.Text, nullable=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+# Initialize the database
+with app.app_context():
+    db.create_all()
 
 
 # Client Registration Endpoint
@@ -48,13 +89,16 @@ def register_client():
 
     client_id = str(uuid.uuid4())
     client_secret = str(uuid.uuid4())
-
-    CLIENTS[client_id] = {
-        "name": data["name"],
-        "redirect_uris": data["redirect_uris"],
-        "client_secret": client_secret,
-        "authorized_grants": ["authorization_code"],
-    }
+    new_client = Client(
+        client_id=client_id,
+        client_secret=client_secret,
+        name=data["name"],
+        redirect_uris=",".join(
+            data["redirect_uris"]
+        ),  # Store as a comma-separated string
+    )
+    db.session.add(new_client)
+    db.session.commit()
 
     return (
         jsonify(
@@ -71,14 +115,6 @@ def register_client():
 # User Registration Endpoint
 @app.route("/register_user", methods=["GET", "POST"])
 def register_user():
-    """
-    사용자 등록 엔드포인트
-    요청 예제:
-    {
-        "username": "new_user",
-        "password": "secure_password"
-    }
-    """
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
@@ -86,11 +122,15 @@ def register_user():
         if not username or not password:
             return jsonify({"error": "Both username and password are required."}), 400
 
-        if username in USERS:
+        if User.query.get(username):
             return jsonify({"error": "Username already exists."}), 400
 
         hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-        USERS[username] = hashed_password
+        new_user = User(
+            username=username, password_hash=hashed_password.decode("utf-8")
+        )
+        db.session.add(new_user)
+        db.session.commit()
 
         return jsonify({"message": f"User {username} registered successfully!"}), 201
 
@@ -110,9 +150,9 @@ def login():
         username = request.form["username"]
         password = request.form["password"]
 
-        hashed_password = USERS.get(username)
-        if not hashed_password or not bcrypt.checkpw(
-            password.encode("utf-8"), hashed_password
+        user = User.query.get(username)
+        if not user or not bcrypt.checkpw(
+            password.encode("utf-8"), user.password_hash.encode("utf-8")
         ):
             return "Invalid credentials", 401
 
@@ -135,18 +175,26 @@ def authorize():
     scope = request.args.get("scope", "")
     state = request.args.get("state", "")
 
+    # Ensure user is logged in
     if "user" not in session:
         return redirect(url_for("login", next=request.url))
+
+    client = Client.query.get(client_id)
+    if not client or redirect_uri not in client.redirect_uris.split(","):
+        return jsonify({"error": "Invalid client or redirect URI"}), 400
 
     if request.method == "POST":
         if "approve" in request.form:
             code = str(uuid.uuid4())
-            AUTHORICATION_CODES[code] = {
-                "client_id": client_id,
-                "user": session["user"],
-                "scope": scope,
-                "expires": datetime.now(UTC) + timedelta(minutes=10),
-            }
+            new_code = AuthorizationCode(
+                code=code,
+                client_id=client_id,
+                username=session["user"],
+                scope=scope,
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            )
+            db.session.add(new_code)
+            db.session.commit()
             return redirect(f"{redirect_uri}?code={code}&state={state}")
         return "Access Denied", 403
 
@@ -177,45 +225,55 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def generate_access_token(username: str, client_id: str, scope: str) -> str:
+    payload = {
+        "user": username,
+        "client_id": client_id,
+        "scope": scope,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
 def process_authorization_code_grant(data: dict):
     client_id = data.get("client_id", "")
     client_secret = data.get("client_secret", "")
     code = data.get("code", "")
 
-    if client_id not in CLIENTS or CLIENTS[client_id]["client_secret"] != client_secret:
+    client = Client.query.get(client_id)
+    if not client or client.client_secret != client_secret:
         return jsonify({"error": "invalid_client"}), 401
 
-    auth_code = AUTHORICATION_CODES.get(code)
-    if (
-        not auth_code
-        or auth_code["expires"] < datetime.now(UTC)
-        or auth_code["client_id"] != client_id
-    ):
+    auth_code = AuthorizationCode.query.get(code)
+    if not auth_code or auth_code.client_id != client_id:
+        return jsonify({"error": "invalid_grant"}), 400
+
+    expires_at = auth_code.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at < datetime.now(timezone.utc):
+        db.session.delete(auth_code)
+        db.session.commit()
         return jsonify({"error": "invalid_grant"}), 400
 
     # Generate Access Token
-    payload = {
-        "client_id": client_id,
-        "user": auth_code["user"],
-        "scope": auth_code["scope"],
-        "exp": datetime.now(UTC) + timedelta(hours=1),  # Short-lived access token
-    }
-    access_token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    access_token = generate_access_token(auth_code.username, client_id, auth_code.scope)
 
     # Generate Refresh Token
     refresh_token = str(uuid.uuid4())
 
     # Store hashed refresh token
-    hashed_refresh_token = hash_token(refresh_token)
-    REFRESH_TOKENS[hashed_refresh_token] = {
-        "client_id": client_id,
-        "user": auth_code["user"],
-        "scope": auth_code["scope"],
-        "expires": datetime.now(UTC) + timedelta(days=7),  # Longer-lived refresh token
-    }
-
-    # Clean up authorization code
-    del AUTHORICATION_CODES[code]
+    new_refresh_token = RefreshToken(
+        token=refresh_token,
+        client_id=client_id,
+        username=auth_code.username,
+        scope=auth_code.scope,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db.session.add(new_refresh_token)
+    db.session.delete(auth_code)
+    db.session.commit()
 
     return jsonify(
         {
@@ -232,23 +290,29 @@ def process_refresh_token_grant(data: dict):
     client_id = data.get("client_id", "")
     client_secret = data.get("client_secret", "")
 
-    if client_id not in CLIENTS or CLIENTS[client_id]["client_secret"] != client_secret:
+    client = Client.query.get(client_id)
+    if not client or client.client_secret != client_secret:
         return jsonify({"error": "invalid_client"}), 401
 
     # Validate refresh token
-    hashed_refresh_token = hash_token(refresh_token)
-    token_data = REFRESH_TOKENS.get(hashed_refresh_token)
-    if not token_data or token_data["expires"] < datetime.now(UTC):
+    stored_token = RefreshToken.query.get(refresh_token)
+
+    if not stored_token:
+        return jsonify({"error": "invalid_grant"}), 400
+
+    expires_at = stored_token.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at < datetime.now(timezone.utc):
+        db.session.delete(stored_token)
+        db.session.commit()
         return jsonify({"error": "invalid_grant"}), 400
 
     # Generate a new Access Token
-    payload = {
-        "user": token_data["user"],
-        "client_id": client_id,
-        "scope": token_data["scope"],
-        "exp": datetime.now(UTC) + timedelta(minutes=15),  # Short-lived access token
-    }
-    access_token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    access_token = generate_access_token(
+        stored_token.username, client_id, stored_token.scope
+    )
 
     return jsonify(
         {
