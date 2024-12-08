@@ -122,7 +122,7 @@ def register_user():
         if not username or not password:
             return jsonify({"error": "Both username and password are required."}), 400
 
-        if User.query.get(username):
+        if db.session.get(User, username):
             return jsonify({"error": "Username already exists."}), 400
 
         hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
@@ -150,7 +150,7 @@ def login():
         username = request.form["username"]
         password = request.form["password"]
 
-        user = User.query.get(username)
+        user = db.session.get(User, username)
         if not user or not bcrypt.checkpw(
             password.encode("utf-8"), user.password_hash.encode("utf-8")
         ):
@@ -179,7 +179,7 @@ def authorize():
     if "user" not in session:
         return redirect(url_for("login", next=request.url))
 
-    client = Client.query.get(client_id)
+    client = db.session.get(Client, client_id)
     if not client or redirect_uri not in client.redirect_uris.split(","):
         return jsonify({"error": "Invalid client or redirect URI"}), 400
 
@@ -240,11 +240,11 @@ def process_authorization_code_grant(data: dict):
     client_secret = data.get("client_secret", "")
     code = data.get("code", "")
 
-    client = Client.query.get(client_id)
+    client = db.session.get(Client, client_id)
     if not client or client.client_secret != client_secret:
         return jsonify({"error": "invalid_client"}), 401
 
-    auth_code = AuthorizationCode.query.get(code)
+    auth_code = db.session.get(AuthorizationCode, code)
     if not auth_code or auth_code.client_id != client_id:
         return jsonify({"error": "invalid_grant"}), 400
 
@@ -290,12 +290,12 @@ def process_refresh_token_grant(data: dict):
     client_id = data.get("client_id", "")
     client_secret = data.get("client_secret", "")
 
-    client = Client.query.get(client_id)
+    client = db.session.get(Client, client_id)
     if not client or client.client_secret != client_secret:
         return jsonify({"error": "invalid_client"}), 401
 
     # Validate refresh token
-    stored_token = RefreshToken.query.get(refresh_token)
+    stored_token = db.session.get(RefreshToken, refresh_token)
 
     if not stored_token:
         return jsonify({"error": "invalid_grant"}), 400
