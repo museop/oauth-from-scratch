@@ -1,7 +1,5 @@
 import pytest
-from app import app, db, Client, User, AuthorizationCode, RefreshToken
-from datetime import datetime, timedelta, timezone
-from flask import session
+from app import app, db
 from contextlib import contextmanager
 
 
