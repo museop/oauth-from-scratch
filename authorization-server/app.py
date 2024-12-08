@@ -1,11 +1,14 @@
 from flask import Flask, request, jsonify, redirect, session, url_for
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta, timezone
+from dotenv import load_dotenv
 import bcrypt
 import uuid
 import jwt
 import hashlib
 import os
+
+load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = "your_secret_key"
