@@ -1,0 +1,33 @@
+version: '3.8'
+services:
+  auth-server:
+    build:
+      context: ./authorization-server
+    ports:
+      - "5555:5000"
+    environment:
+      FLASK_APP: app.py
+      FLASK_ENV: development
+      DB_USER: user
+      DB_PASSWORD: password
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: oauth_db
+    depends_on:
+      - db
+    volumes:
+      - ./authorization-server:/app
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: oauth_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+volumes:
+  db_data:

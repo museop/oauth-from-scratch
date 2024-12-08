@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, redirect, session, url_for
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+import time
 import bcrypt
 import uuid
 import jwt
@@ -337,5 +338,21 @@ def callback():
     return jsonify({"code": code, "state": state})
 
 
+def wait_for_db():
+    retries = 5
+    while retries > 0:
+        try:
+            db.session.execute("SELECT 1")
+            print("Database is ready!")
+            return
+        except Exception as e:
+            print(f"Database not ready, retrying... ({retries} retries left)")
+            retries -= 1
+            time.sleep(5)
+    print("Could not connect to tha database. Exiting.")
+    exit(1)
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    wait_for_db()
+    app.run()
