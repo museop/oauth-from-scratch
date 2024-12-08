@@ -1,5 +1,5 @@
 import pytest
-from app import app, db
+from auth_server import app, db
 from contextlib import contextmanager
 
 
