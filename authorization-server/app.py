@@ -5,13 +5,16 @@ import bcrypt
 import uuid
 import jwt
 import hashlib
+import os
 
 app = Flask(__name__)
 app.secret_key = "your_secret_key"
 
 # Database configuration
 app.config["SQLALCHEMY_DATABASE_URI"] = (
-    "sqlite:///oauth_demo.db"  # Replace with PostgreSQL/MySQL in production
+    f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
+    f"@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}"
+    f"/{os.getenv('DB_NAME', 'oauth_db')}"
 )
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
